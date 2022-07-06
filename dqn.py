@@ -41,16 +41,16 @@ class DQN():
 #         loc = index_pool[np.random.permutation(len(index_pool))[0]]
         return loc
     
-    def get_action(self, data, eps_threshold, mask=None):
+    def get_action(self, data, mask=None, eps_threshold:float=.1):
         '''
         here the mask is 1D
         '''
-        assert(len(mask.shape)==1)
         dice = np.random.rand()
-        if (dice < eps_threshold) and (mask is not None): # exploration with probability eps_threshold
+        if (dice < eps_threshold) and (mask is not None): # random policy for exploration with probability eps_threshold
             loc = self.get_rand_action(mask)
-        else:
-            res = self.model(data)
+        else: # use model
+            assert(len(mask.shape)==1)
+            res = self.model(data,mask) # Jul 5, add mask here as second input
             loc = torch.argmax(res)
         return loc
     
@@ -103,9 +103,11 @@ class DQN():
         ########################################
         actions = batch["actions"]
         rewards = batch["rewards"].unsqueeze(1)
-        
         ## Compute Q-values and get best action according to online network
-        output_cur_step  = self.model(batch['observations'])
+        data = batch['observations']
+        breakpoint()
+        mask = batch['masks']
+        output_cur_step  = self.model(data, mask=mask) # Jul 6: added mask
         all_q_values_cur = output_cur_step
         q_values = all_q_values_cur.gather(1, actions.unsqueeze(1))
         
@@ -114,12 +116,14 @@ class DQN():
             target_values = rewards
         else: ### HERE CAN BE ADJUSTED TO BE DOUBLE Q-LEARNING
             with torch.no_grad():
-                ##
-                # glue next_obs with curr_obs[1:]
+                ### glue next_obs with curr_obs[1:]
                 next_obs_last_slice = batch['next_observations']
                 next_obs = torch.concat((batch['observations'][:,1:,:,:],next_obs_last_slice),dim=1)
-                ##
-                all_q_values_next = self.model(next_obs)
+                next_mask= copy.deepcopy(mask)
+                for ind in range(len(mask)):
+                    next_mask[ind,actions[ind]] = 1
+                ###
+                all_q_values_next = self.model(next_obs,mask=next_mask) # Jul 6: added mask
                 target_values = torch.zeros(self.memory.batch_size, device=self.device)
                 best_actions  = all_q_values_next.detach().max(1)[1]
                 target_values = all_q_values_next.gather(1,best_actions.unsqueeze(1))

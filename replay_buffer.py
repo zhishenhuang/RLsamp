@@ -18,6 +18,7 @@ class ReplayMemory:
         self,
         capacity: int,
         curr_obs_shape: np.array,
+        mask_shape:int,
         next_obs_shape: np.array,
         batch_size: int,
         burn_in: int,
@@ -27,6 +28,7 @@ class ReplayMemory:
         self.batch_size = batch_size
         self.burn_in = burn_in
         self.observations      = torch.zeros(capacity, *curr_obs_shape, dtype=torch.float32)
+        self.masks             = torch.zeros(capacity, mask_shape, dtype=torch.float32)
         self.actions           = torch.zeros(capacity, dtype=torch.long)
         self.next_observations = torch.zeros(capacity, *next_obs_shape, dtype=torch.float32)
         self.rewards           = torch.zeros(capacity, dtype=torch.float32)
@@ -60,9 +62,10 @@ class ReplayMemory:
 #         self._m2_obs = self._m2_obs + (delta * delta2)
 #         self.std_obs = np.sqrt(self._m2_obs / (self.count_seen - 1))
 
-    def push(self, observation: np.array, action: int, next_observation: np.array, reward: float): # , done: bool
+    def push(self, observation: np.array, mask:np.array, action: int, next_observation: np.array, reward: float): # , done: bool
         """ Pushes a transition into the replay buffer. """
         self.observations[self.position] = observation.clone().squeeze()
+        self.masks[self.position] = mask.squeeze()
         self.actions[self.position] = action # torch.tensor([action], dtype=torch.long)
         self.next_observations[self.position] = next_observation.clone().squeeze()
         self.rewards[self.position] = reward # torch.tensor([reward], dtype=torch.float32)
@@ -83,6 +86,7 @@ class ReplayMemory:
         indices = np.random.choice(min(self.count_seen - 1, len(self)), self.batch_size)
         return {
             "observations": self._normalize(self.observations[indices]),
+            "masks":self.masks[indices],
             "next_observations": self._normalize(self.next_observations[indices]),
             "actions": self.actions[indices],
             "rewards": self.rewards[indices]}
@@ -92,6 +96,7 @@ class ReplayMemory:
         """ Saves all tensors and normalization info to file `directory/name` """
         data = {
             "observations": self.observations,
+            "masks":self.masks,
             "actions": self.actions,
             "next_observations": self.next_observations,
             "rewards": self.rewards,
@@ -132,6 +137,7 @@ class ReplayMemory:
         old_len = data["observations"].shape[0]
         if capacity is None:
             self.observations = data["observations"]
+            self.masks = data["masks"]
             self.actions = data["actions"]
             self.next_observations = data["next_observations"]
             self.rewards = data["rewards"]
@@ -140,7 +146,9 @@ class ReplayMemory:
             assert capacity >= len(data["observations"])
             curr_obs_shape = data["observations"].shape[1:]
             next_obs_shape = data["next_observations"].shape[1:]
+            mask_shape = data["masks"].shape[1]
             self.observations = torch.zeros(capacity, *curr_obs_shape, dtype=torch.float32)
+            self.masks   = torch.zeros(capacity, mask_shape, dtype=torch.float32)
             self.actions = torch.zeros(capacity, dtype=torch.long)
             self.next_observations = torch.zeros(capacity, *next_obs_shape, dtype=torch.float32)
             self.rewards = torch.zeros(capacity, dtype=torch.float32)

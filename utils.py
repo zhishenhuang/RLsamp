@@ -118,3 +118,18 @@ def fft_observe(imgs,mask,return_opt='img'):
 
 def NRMSE(x,xstar):
         return torch.norm(x-xstar)/torch.norm(xstar)
+    
+# def encode_obs(curr_obs,mask) -> torch.Tensor:
+#     batch_size, num_channels, img_height, img_width = curr_obs.shape
+#     transformed_obs = torch.zeros(batch_size, num_channels, img_height+1, img_width).float()
+#     transformed_obs[..., :img_height, :] = curr_obs
+#     # The last row is the mask
+#     transformed_obs[..., img_height, :]  = mask
+#     return transformed_obs
+
+# def decode_obs(obs):
+#     full_height = obs.shape[2]
+#     data = obs[..., :full_height, :]
+#     # The last row is the mask
+#     mask = obs[..., full_height, :]
+#     return data, mask

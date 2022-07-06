@@ -17,12 +17,16 @@ class poly_net(nn.Module):
     def num_param(self):
         return sum([p.numel() for p in self.parameters() if p.requires_grad])
     
-    def forward(self, x, mask=None):
+    def forward(self, img_input, mask=None):
+        # the input mask should be binary
         if mask is not None:
+            if len(mask.shape) == 1:
+                mask = mask.repeat(img_input.shape[0],1)
             assert(self.samp_dim == mask.shape[1])
+            assert(img_input.shape[0] == mask.shape[0])
         else:
-            mask = torch.zeros((1,self.samp_dim))
-        x = self.pool(Func.relu(self.conv1(x)))
+            mask = torch.zeros((img_input.shape[0],self.samp_dim))
+        x = self.pool(Func.relu(self.conv1(img_input)))
         x = self.pool(Func.relu(self.conv2(x)))
         x = self.pool(Func.relu(self.conv3(x)))
         x = x.view(-1, 1680)
