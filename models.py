@@ -36,7 +36,7 @@ class poly_net(nn.Module):
         x = Func.relu(self.fc1(x))
         x = self.fc2(x)
         if self.softmax:
-            return self.Softmax(torch.x - 1e10*mask)
+            return self.Softmax(x - 1e10*mask)
         else:
             return x - 1e10*mask
        
