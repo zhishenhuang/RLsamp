@@ -1,7 +1,9 @@
 from header import *
 
 class ocmrLoader():
-    def __init__(self,files,datapath='/mnt/shared_a/OCMR/OCMR_fully_sampled_images/',t_backtrack=3,batch_size=1,shuffle=True):
+    def __init__(self,files,datapath='/mnt/shared_a/OCMR/OCMR_fully_sampled_images/',
+                 t_backtrack=3,batch_size=1,shuffle=True,
+                 train_mode=True):
         '''
         [kx, ky, kz, phase/time, set, slice, rep]
         frequency encoding, first phase encoding, second phase encoding, 
@@ -15,8 +17,9 @@ class ocmrLoader():
         if shuffle:
             self.fileIter = itertools.cycle(np.random.permutation(len(self.files)))
         else:
-            self.fileIter = itertools.cycle(np.arange(len(self.ncfiles)))
-        self.batch_size=batch_size
+            self.fileIter = itertools.cycle(np.arange(len(self.files)))
+        self.batch_size = batch_size
+        self.train_mode = train_mode
     
     def reset_iter(self):
         self.t     = copy.deepcopy(self.t_backtrack)
@@ -51,7 +54,10 @@ class ocmrLoader():
                         self.rep  += 1
                         self.slice = 0                        
         if self.rep == self.rep_ubd:
-            self.reset_iter()        
+            if self.train_mode:
+                self.reset_iter()
+            else:
+                return None, None
         return data_source, data_target
 
 def shiftsamp(sparsity,imgHeg):
@@ -97,11 +103,13 @@ def mask_naiveRand(imgHeg,fix=10,other=30,roll=False):
 #         mask = F.fftshift(mask)
 #         return mask,None,None
     
-def fft_observe(imgs,mask,return_opt='img'):
+def fft_observe(imgs,mask,return_opt='img',roll=False):
     '''
     input imgs in image domain
     apply mask in the Fourier domain
     assume imgs in the shape [NCHW], mask in the shape [NW]
+    Aug 15: need to coordinate the convention between mask and fft info. 
+            Since rolling fft info is only for the sigpy solver, so we only roll fft info but do not roll masks.
     '''
     imgs_fft = F.fftn(imgs,dim=(2,3),norm='ortho').to(torch.cfloat)
     if len(mask.shape) > 1:
@@ -114,7 +122,11 @@ def fft_observe(imgs,mask,return_opt='img'):
         imgs_obs = torch.abs(F.ifftn(imgs_fft,dim=(2,3),norm='ortho'))
         return imgs_obs
     elif return_opt == 'freq':
-        return imgs_fft
+        if roll:
+            breakpoint()
+            return F.fftshift(imgs_fft,dims=(2,3))
+        else:
+            return imgs_fft
 
 def NRMSE(x,xstar):
         return torch.norm(x-xstar)/torch.norm(xstar)
