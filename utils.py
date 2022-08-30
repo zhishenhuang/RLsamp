@@ -1,5 +1,65 @@
 from header import *
 
+# class ocmrLoader():
+#     def __init__(self,files,datapath='/mnt/shared_a/OCMR/OCMR_fully_sampled_images/',
+#                  t_backtrack=3,batch_size=1,shuffle=True,
+#                  train_mode=True):
+#         '''
+#         [kx, ky, kz, phase/time, set, slice, rep]
+#         frequency encoding, first phase encoding, second phase encoding, 
+#         phase (time), set (velocity encoding), slice, repetition
+
+#         better not to take average over the repetition dimension
+#         '''
+#         self.datapath    = datapath
+#         self.t_backtrack = t_backtrack
+#         self.files       = files       
+#         if shuffle:
+#             self.fileIter = itertools.cycle(np.random.permutation(len(self.files)))
+#         else:
+#             self.fileIter = itertools.cycle(np.arange(len(self.files)))
+#         self.batch_size = batch_size
+#         self.train_mode = train_mode
+    
+#     def reset_iter(self):
+#         self.t     = copy.deepcopy(self.t_backtrack)
+#         self.rep   = 0
+#         self.slice = 0
+#         self.curr_data = torch.load(self.datapath + self.curr_file)
+#         self.t_ubd     = self.curr_data.shape[3]
+#         self.slice_ubd = self.curr_data.shape[5]
+#         self.rep_ubd   = self.curr_data.shape[6]
+        
+#     def reset(self):
+#         self.curr_file = self.files[ self.fileIter.__next__() ]
+#         print(f'current file: {self.curr_file}')
+#         self.reset_iter()
+    
+#     def load(self):
+#         if self.rep < self.rep_ubd:
+#             if self.slice < self.slice_ubd:
+#                 curr_batchsize = min(self.batch_size,self.t_ubd-self.t-1)                
+#                 data_source = torch.zeros(curr_batchsize,self.t_backtrack,self.curr_data.shape[0],self.curr_data.shape[1])
+#                 data_target = torch.zeros(curr_batchsize,1,self.curr_data.shape[0],self.curr_data.shape[1])
+                
+#                 for ind in range(curr_batchsize):
+#                     data_source[ind,:,:,:] = self.curr_data[:,:,0,(self.t-self.t_backtrack):self.t,0,self.slice,self.rep].permute(2,0,1)
+#                     data_target[ind,:,:,:] = self.curr_data[:,:,0,self.t:self.t+1,0,self.slice,self.rep].permute(2,0,1)
+#                     self.t += 1 # time index increases by 1
+                
+#                 if self.t == self.t_ubd:
+#                     self.t = copy.deepcopy(self.t_backtrack)
+#                     self.slice += 1
+#                     if self.slice == self.slice_ubd:
+#                         self.rep  += 1
+#                         self.slice = 0                        
+#         if self.rep == self.rep_ubd:
+#             if self.train_mode:
+#                 self.reset_iter()
+#             else:
+#                 return None, None
+#         return data_source, data_target
+    
 class ocmrLoader():
     def __init__(self,files,datapath='/mnt/shared_a/OCMR/OCMR_fully_sampled_images/',
                  t_backtrack=3,batch_size=1,shuffle=True,
@@ -22,7 +82,7 @@ class ocmrLoader():
         self.train_mode = train_mode
     
     def reset_iter(self):
-        self.t     = copy.deepcopy(self.t_backtrack)
+        self.t     = 0
         self.rep   = 0
         self.slice = 0
         self.curr_data = torch.load(self.datapath + self.curr_file)
@@ -34,25 +94,35 @@ class ocmrLoader():
         self.curr_file = self.files[ self.fileIter.__next__() ]
         print(f'current file: {self.curr_file}')
         self.reset_iter()
-    
+        
     def load(self):
+        '''
+        load a batch of time series images
+        '''
         if self.rep < self.rep_ubd:
-            if self.slice < self.slice_ubd:
-                curr_batchsize = min(self.batch_size,self.t_ubd-self.t-1)                
-                data_source = torch.zeros(curr_batchsize,self.t_backtrack,self.curr_data.shape[0],self.curr_data.shape[1])
-                data_target = torch.zeros(curr_batchsize,1,self.curr_data.shape[0],self.curr_data.shape[1])
+            if self.slice < self.slice_ubd:               
+                data_source = torch.zeros(self.batch_size,self.t_backtrack,self.curr_data.shape[0],self.curr_data.shape[1])
+                data_target = torch.zeros(self.batch_size,1,self.curr_data.shape[0],self.curr_data.shape[1])
                 
-                for ind in range(curr_batchsize):
-                    data_source[ind,:,:,:] = self.curr_data[:,:,0,(self.t-self.t_backtrack):self.t,0,self.slice,self.rep].permute(2,0,1)
-                    data_target[ind,:,:,:] = self.curr_data[:,:,0,self.t:self.t+1,0,self.slice,self.rep].permute(2,0,1)
-                    self.t += 1 # time index increases by 1
+                for ind in range(self.batch_size):
+                    endTime = self.t+self.t_backtrack
+                    if endTime <= self.t_ubd-1:
+                        data_source[ind,:,:,:] = self.curr_data[:,:,0,self.t:endTime   ,0,self.slice,self.rep].permute(2,0,1)
+                        data_target[ind,:,:,:] = self.curr_data[:,:,0,endTime:endTime+1,0,self.slice,self.rep].permute(2,0,1)
+                    else: # glue earlier frames onto the the current time series
+                        source_part1 = self.curr_data[:,:,0,self.t:self.t_ubd,0,self.slice,self.rep].permute(2,0,1)
+                        addOn        = self.t_backtrack - (self.t_ubd-self.t)
+                        source_part2 = self.curr_data[:,:,0,0:addOn,0,self.slice,self.rep].permute(2,0,1)
+                        data_source[ind,:,:,:] = torch.cat((source_part1,source_part2),dim=0)
+                        data_target[ind,:,:,:] = self.curr_data[:,:,0,addOn:addOn+1,0,self.slice,self.rep].permute(2,0,1)
+                    self.t += 1 # time index increases by 1    
                 
                 if self.t == self.t_ubd:
                     self.t = copy.deepcopy(self.t_backtrack)
                     self.slice += 1
                     if self.slice == self.slice_ubd:
                         self.rep  += 1
-                        self.slice = 0                        
+                        self.slice = 0
         if self.rep == self.rep_ubd:
             if self.train_mode:
                 self.reset_iter()
