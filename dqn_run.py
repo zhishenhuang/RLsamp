@@ -83,7 +83,7 @@ if __name__ == '__main__':
                            next_obs_shape=(1,heg,wid),
                            batch_size=batch_size,
                            burn_in=batch_size)
-    model   = poly_net(samp_dim=wid)
+    model   = poly_net(samp_dim=wid,in_chans=t_backtrack)
     policy  = DQN(model,memory,max_iter=max_iter,ngpu=ngpu,gamma=discount,lr=lr,double_q_mode=double_q)
     trainer = DeepQL_trainer(loader,policy,episodes=episodes,
                              eps=eps,

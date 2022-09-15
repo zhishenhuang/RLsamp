@@ -33,8 +33,8 @@ class DeepQL_trainer():
         
     def train(self):  
         # run training
-        while self.dataloader.reset_count//self.dataloader.file_count<self.episodes:
-            print(f'episode [{self.dataloader.reset_count//self.dataloader.file_count}/{self.episodes}]')
+        while (self.dataloader.reset_count-1)//self.dataloader.file_count<self.episodes:
+            print(f'epoch [{self.dataloader.reset_count//self.dataloader.file_count +1}/{self.episodes}] file [{self.dataloader.reset_count%self.dataloader.file_count}/{self.dataloader.file_count}] rep [{self.dataloader.rep +1}/{self.dataloader.rep_ubd}] slice [{self.dataloader.slice +1}/{self.dataloader.slice_ubd}]')
             mask = mask_naiveRand(self.fulldim,fix=self.base,other=0,roll=False)   
             # one mask at a time, start with a low frequency mask
             horizon_reward_total = 0
@@ -78,6 +78,7 @@ class DeepQL_trainer():
                     if self.steps % self.policy.target_net_update_freq == 0:
                         self.target_net.load_state_dict(self.policy.model.state_dict())
             self.training_record['horizon_rewards'].append(horizon_reward_total)
+            print(f'step: {self.steps}, episode reward: {horizon_reward_total}')
 #             self.dataloader.reset()
     
     def save(self):
