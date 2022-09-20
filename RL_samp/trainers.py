@@ -1,5 +1,6 @@
 from .header import *
-from .utils import fft_observe, mask_naiveRand
+from .utils import fft_observe, mask_naiveRand, NRMSE
+from .reconstructors import sigpy_solver
 
 class DeepQL_trainer():
     def __init__(self,dataloader,policy,
@@ -65,7 +66,10 @@ class DeepQL_trainer():
                 update_results = self.policy.update_parameters()
                 if update_results is not None:
                     for key in ['loss', 'grad_norm','q_values_mean','q_values_std']:
-                        self.training_record[key].append(update_results[key])
+                        if key != 'grad_norm':
+                            self.training_record[key].append(update_results[key].detach().item())
+                        else:
+                            self.training_record[key].append(update_results[key])
                     curr_loss = update_results['loss']
                     print(f'step: {self.steps}, loss: {curr_loss:.4f}, RL reward: {reward.mean().item():.4f}, Rand reward: {reward_rand.mean().item():.4f} \n mask sum: {mask.sum().item()}')
                     torch.cuda.empty_cache()
@@ -166,12 +170,12 @@ class RL_tester():
         return self.testRec
 
     
-##############
+##########################################
 # actor-critic 1 trainer, debug needed
-##############
+##########################################
 class AC1_trainer():
     def __init__(self, dataloader, polynet, valnet,
-                  fulldim:int=144,base:int=10,budget:int=50,
+                  fulldim:int=144,base:int=5,budget:int=13,
                   gamma:float=.8,
                   horizon:int=None,
                   max_trajectories:int=100,
@@ -180,12 +184,13 @@ class AC1_trainer():
                   L:float=5e-3,
                   max_iter:int=100,
                   solver:str='ADMM',
-                  device=torch.device('cpu'),
-                  save_dir:str='/home/huangz78/rl_samp/'):
+                  save_dir:str='/home/huangz78/rl_samp/',
+                  ngpu:int=1,
+                  freq_dqn_checkpoint_save:int=10):
         self.dataloader = dataloader
         self.dataloader.reset()
-        self.polynet    = polynet
-        self.valnet     = valnet
+        self.polynet    = polynet.cuda() if ngpu > 0 else polynet
+        self.valnet     = valnet.cuda() if ngpu > 0 else valnet
         self.fulldim    = fulldim
         self.base       = int(base)
         self.budget     = int(budget)
@@ -203,11 +208,17 @@ class AC1_trainer():
         self.L = L
         self.max_iter = int(max_iter)
         self.solver = 'ADMM'
-        self.device = device
         
         self.reward_per_horizon = []
         self.save_dir = save_dir
-    
+        self.ngpu = ngpu
+        self.freq_dqn_checkpoint_save = freq_dqn_checkpoint_save
+        
+        self.steps = 0
+        self.train_hist = {'poly_loss':[], 'val_loss':[], 'action_prob':[], 'action_prob':[], 'v':[],
+                           'poly_grad_norm':[], 'val_grad_norm':[],
+                           'horizon_rewards':[]}
+        
     def get_action(self, curr_obs, mask=None):
         '''
         here the mask is 1D
@@ -245,16 +256,21 @@ class AC1_trainer():
         return next_obs, reward
         
     def run(self):
-        for trajectory in range(self.max_trajectories):
+#         for trajectory in range(self.max_trajectories):
+#             print(f'trajectory [{trajectory+1}/{self.max_trajectories}]')
+        while (self.dataloader.reset_count-1)//self.dataloader.file_count<self.max_trajectories:
+            print(f'epoch [{self.dataloader.reset_count//self.dataloader.file_count +1}/{self.max_trajectories}] file [{self.dataloader.reset_count%self.dataloader.file_count}/{self.dataloader.file_count}] rep [{self.dataloader.rep +1}/{self.dataloader.rep_ubd}] slice [{self.dataloader.slice +1}/{self.dataloader.slice_ubd}]')
             
-            print(f'trajectory [{trajectory+1}/{self.max_trajectories}]')
             mask = mask_naiveRand(self.fulldim,fix=self.base,other=0,roll=False) # curr_state
             I = 1
             reward_horizon = 0
             for t in range(self.horizon):
-                breakpoint()
+                self.steps += 1
                 data_source, data_target = self.dataloader.load()
                 curr_obs = fft_observe(data_source, mask)
+                if self.ngpu > 0:
+                    curr_obs = curr_obs.cuda()
+                    mask = mask.cuda()
                 action, prob = self.get_action(curr_obs, mask=mask)
                 
                 next_obs_last_slice, reward = self.step(action, data_target, copy.deepcopy(mask)) 
@@ -265,7 +281,8 @@ class AC1_trainer():
                     vnew  = self.valnet(next_obs)
                     delta = reward + self.gamma * vnew  - v # should check if delta == 0
                 self.optimizer_val.zero_grad()
-                val_loss = - delta * v
+                breakpoint()
+                val_loss = - delta * v     # Sep 19: val_loss is small in magnitude, not sure if this is an issue
                 val_loss.backward()
                 self.optimizer_val.step()
                 
@@ -276,17 +293,40 @@ class AC1_trainer():
                 
                 I *= self.gamma
                 mask[action] = 1
+                
+                # Compute total gradient norm (for logging purposes) and then clip gradients
+                grad_norm: torch.Tensor = 0  
+                for p in list(filter(lambda p: p.grad is not None, self.polynet.parameters())):
+                    grad_norm += p.grad.data.norm(2).item() ** 2
+                grad_norm = grad_norm ** 0.5
+                self.train_hist['poly_grad_norm'].append(grad_norm)
+                
+                grad_norm: torch.Tensor = 0  
+                for p in list(filter(lambda p: p.grad is not None, self.valnet.parameters())):
+                    grad_norm += p.grad.data.norm(2).item() ** 2
+                grad_norm = grad_norm ** 0.5
+                self.train_hist['val_grad_norm'].append(grad_norm)
+                
+                self.train_hist['poly_loss'].append(poly_loss.detach().item())
+                self.train_hist['val_loss'].append(val_loss.detach().item())
+                self.train_hist['action_prob'].append(prob.detach().item())
+                self.train_hist['v'].append(v.detach().item())
+                
                 print(f'step: {self.steps}, poly_loss: {poly_loss.detach().item():.4f}, val_loss: {val_loss.detach().item():.4f}, reward: {reward.mean().item():.4f}, \n mask sum: {mask.sum().item()}')
                 torch.cuda.empty_cache()
-            self.reward_per_horizon.append(reward_horizon)
+                
+                if self.steps % self.freq_dqn_checkpoint_save == 0:
+                    self.save()
+                
+            self.train_hist['horizon_rewards'].append(reward_horizon)
     
     def save(self):
-        filename = f'AC1_hist.pt'
+        filename = f'AC1_hist_base{self.base}_budget{self.budget}.pt'
         torch.save(
                     {
                         "polynet_weights": self.polynet.state_dict(),
                         "valnet_weights": self.valnet.state_dict(),
-                        "reward_per_horizon":self.reward_per_horizon,
+                        "training_record":self.train_hist,
                     },
                     self.save_dir + filename,
                 )

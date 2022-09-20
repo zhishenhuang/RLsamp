@@ -58,10 +58,10 @@ class val_net(nn.Module):
         return sum([p.numel() for p in self.parameters() if p.requires_grad])
     
     def forward(self, img_input):
-        x = self.pool(Func.relu(self.conv1(img_input)))
-        x = self.pool(Func.relu(self.conv2(x)))
-        x = self.pool(Func.relu(self.conv3(x)))
+        x = self.pool(Func.leaky_relu(self.conv1(img_input)))
+        x = self.pool(Func.leaky_relu(self.conv2(x)))
+        x = self.pool(Func.leaky_relu(self.conv3(x)))
         x = x.view(-1, 1680)
-        x = Func.relu(self.fc1(x))
-        x = Func.relu(self.fc2(x))
+        x = Func.leaky_relu(self.fc1(x))
+        x = Func.leaky_relu(self.fc2(x))
         return x
