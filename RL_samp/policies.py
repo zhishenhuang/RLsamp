@@ -17,7 +17,8 @@ class DQN():
                       solver:str='ADMM',
                       double_q_mode=False,
                       target_model=None,
-                      ngpu:int=0):
+                      ngpu:int=0,
+                      target_net_update_freq:int=20):
         self.memory     = memory
         self.init_base  = init_base
         self.gamma      = gamma
@@ -30,9 +31,11 @@ class DQN():
                 
         self.model  = model.cuda() if self.ngpu > 0 else model
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
-        
+        self.target_net_update_freq = target_net_update_freq
         self.double_q_mode = double_q_mode
         if double_q_mode:
+            if target_model is None:
+                target_model = copy.deepcopy(model)
             self.target_model = target_model.cuda() if self.ngpu > 0 else target_model
         
     def get_rand_action(self,mask):
@@ -100,7 +103,7 @@ class DQN():
         new_nrmse = NRMSE(next_obs,target_gt)
         reward = old_nrmse - new_nrmse
         
-        return next_obs, reward, mask
+        return next_obs, reward, mask, [next_obs,target_gt]
     
     def update_parameters(self):
         self.model.train()
