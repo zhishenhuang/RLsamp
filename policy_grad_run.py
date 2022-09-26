@@ -21,13 +21,15 @@ def get_args():
     parser.add_argument('-tdp', '--trace-decay-poly', type=float, default=.8,nargs='?',
                         help='trace decay rate lambda for policy network', dest='tdp')
     
-    parser.add_argument('-lrv', '--step-size-val',  type=float, default=.3,nargs='?',
+    parser.add_argument('-lrv', '--step-size-val',  type=float, default=3e-1,nargs='?',
                         help='step size alpha for value network', dest='lrv')
-    parser.add_argument('-lrp', '--step-size-poly', type=float, default=.3,nargs='?',
+    parser.add_argument('-lrp', '--step-size-poly', type=float, default=3e-1,nargs='?',
                         help='step size alpha for policy network', dest='lrp')
     
     parser.add_argument('-gamma', '--discount-factor', type=float, default=.5,nargs='?',
                         help='discount factor', dest='gamma')
+    parser.add_argument('-slope', '--tanh-slope', type=float, default=1e-3,nargs='?',
+                        help='slope for tanh activation', dest='slope')
     
     parser.add_argument('-e', '--epochs', type=int, default=1,nargs='?',
                         help='epoch', dest='epochs')
@@ -82,11 +84,11 @@ if __name__ == '__main__':
     episodes    = args.epochs
     save_freq   = args.save_frequency
     ngpu        = args.ngpu
-    
+    slope       = args.slope
     
     loader  = ocmrLoader(ncfiles,batch_size=1)
     p_net   = poly_net(samp_dim=wid,softmax=True)
-    v_net   = val_net()
+    v_net   = val_net(slope=slope)
     trainer = AC1_ET_trainer(loader, polynet=p_net, valnet=v_net,
                              fulldim=wid, base=base, budget=budget,
                              lambda_poly=tdp, lambda_val=tdv,

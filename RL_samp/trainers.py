@@ -88,8 +88,8 @@ class DeepQL_trainer():
                             print(f'step: {self.steps}, rmse_lowfreq {rmse_lowfreq.item()}')
                             
                         if np.random.rand() <= 0.1:
-                            recon_paris_RL.append(mask)
-                            self.training_record['recon_samples'].append( recon_paris_RL )
+                            recon_pair_RL.append(mask)
+                            self.training_record['recon_samples'].append( recon_pair_RL )
                             if self.compare:
                                 recon_pair_rand.append(mask_rand)
                                 self.training_record['recon_samples_rand'].append( recon_pair_rand )
@@ -250,10 +250,26 @@ class AC1_trainer():
         self.freq_dqn_checkpoint_save = freq_dqn_checkpoint_save
         
         self.steps = 0
-        self.train_hist = {'poly_loss':[], 'val_loss':[], 'action_prob':[], 'action_prob':[], 'v':[],
+        self.train_hist = {'poly_loss':[], 'val_loss':[], 'action_prob':[], 'v':[],
                            'poly_grad_norm':[], 'val_grad_norm':[],
                            'horizon_rewards':[], 
                            'rmse':[], 'recon_samples':[]}
+        
+    def rand_eval(self, target_gt):
+        mask = mask_naiveRand(self.fulldim,fix=self.base,other=self.budget,roll=False) # curr_state
+        target_obs_freq = fft_observe(target_gt,mask,return_opt='freq',roll=True) # roll=True because using sigpy
+        recon_rand = sigpy_solver(target_obs_freq, 
+                                 L=self.L,max_iter=self.max_iter,solver=self.solver,
+                                 heg=target_gt.shape[2],wid=target_gt.shape[3])
+        return NRMSE(recon_rand,target_gt)
+    
+    def lowfreq_eval(self, target_gt):
+        mask = mask_naiveRand(self.fulldim,fix=self.base+self.budget,other=0,roll=False) # curr_state
+        target_obs_freq = fft_observe(target_gt,mask,return_opt='freq',roll=True) # roll=True because using sigpy
+        recon_lowfreq   = sigpy_solver(target_obs_freq, 
+                                 L=self.L,max_iter=self.max_iter,solver=self.solver,
+                                 heg=target_gt.shape[2],wid=target_gt.shape[3])
+        return NRMSE(recon_lowfreq,target_gt)
         
     def get_action(self, curr_obs, mask=None):
         '''
@@ -314,7 +330,7 @@ class AC1_trainer():
                 v = self.valnet(curr_obs)
                 with torch.no_grad():
                     next_obs = torch.concat((curr_obs[:,1:,:,:],next_obs_last_slice),dim=1)
-                    vnew  = self.valnet(next_obs)
+                    vnew  = self.valnet(next_obs) if t!=self.horizon-1 else 0
                     delta = reward + self.gamma * vnew  - v # should check if delta == 0
                 self.optimizer_val.zero_grad()
                 breakpoint()
@@ -425,7 +441,7 @@ class AC1_ET_trainer():
         self.freq_dqn_checkpoint_save = freq_dqn_checkpoint_save
         
         self.steps = 0
-        self.train_hist = {'poly_loss':[], 'val_loss':[], 'action_prob':[], 'action_prob':[], 'v':[],
+        self.train_hist = {'poly_loss':[], 'val_loss':[], 'action_prob':[], 'v':[],
                            'poly_grad_norm':[], 'val_grad_norm':[],
                            'horizon_rewards':[], 
                            'rmse':[], 'recon_samples':[], 'rmse_cmp':[]}
@@ -523,11 +539,10 @@ class AC1_ET_trainer():
         return NRMSE(recon_lowfreq,target_gt)
         
     def run(self):
-        self.trace_init()
         
         while (self.dataloader.reset_count-1)//self.dataloader.file_count<self.max_trajectories:
             print(f'epoch [{self.dataloader.reset_count//self.dataloader.file_count +1}/{self.max_trajectories}] file [{self.dataloader.reset_count%self.dataloader.file_count}/{self.dataloader.file_count}] rep [{self.dataloader.rep +1}/{self.dataloader.rep_ubd}] slice [{self.dataloader.slice +1}/{self.dataloader.slice_ubd}]')
-            
+            self.trace_init()
             mask = mask_naiveRand(self.fulldim,fix=self.base,other=0,roll=False) # curr_state
             I = 1
             reward_horizon = 0
@@ -545,18 +560,18 @@ class AC1_ET_trainer():
                 v = self.valnet(curr_obs)
                 with torch.no_grad():
                     next_obs = torch.concat((curr_obs[:,1:,:,:],next_obs_last_slice.to(self.device)),dim=1)
-                    vnew  = self.valnet(next_obs)
+                    vnew  = self.valnet(next_obs) if t<self.horizon-1 else 0
                     delta = reward + self.gamma * vnew  - v # should check if delta == 0
-                    
+                    print(f'step {self.steps}, delta {delta.item()}')
                 self.optimizer_val.zero_grad()
-                val_loss = v     # Sep 19: val_loss is small in magnitude
+                val_loss = -v     # Sep 25: val_loss keeps decreasing without going up when new file of images is loaded
                 val_loss.backward()
                 vgrad = self.extract_val_grad()
                 self.vtr_update(vgrad)
                 self.update_valnet(delta.mean().squeeze()) # delta is a [1,1] tensor
                 
                 self.optimizer_poly.zero_grad()
-                poly_loss = torch.log(prob)
+                poly_loss = -torch.log(prob)
                 poly_loss.backward()
                 pgrad = self.extract_poly_grad()
                 self.ptr_update(pgrad,I)
@@ -567,17 +582,18 @@ class AC1_ET_trainer():
                 
                 ### Save training recon samples
                 if t == self.horizon-1:
-                    rmse_tmp = NRMSE(recon_pair[0],recon_pair[1]).item()
-                    self.train_hist['rmse'].append( rmse_tmp.item() )
-                    print(f'step: {self.steps}, rmse {rmse_tmp.item()}')
+                    rmse_tmp = NRMSE(recon_pair[0],recon_pair[1])
+                    self.train_hist['rmse'].append( rmse_tmp )
+                    print(f'step: {self.steps}, rmse {rmse_tmp}')
+                    rmse_rand = self.rand_eval(recon_pair[1])
+                    print(f'step: {self.steps}, rmse_rand {rmse_rand}')
+                    rmse_lowfreq = self.lowfreq_eval(recon_pair[1])
+                    print(f'step: {self.steps}, rmse_lowfreq {rmse_lowfreq}')
+                    self.train_hist['rmse_cmp'].append([rmse_tmp, rmse_rand, rmse_lowfreq])
                     if np.random.rand() <= 0.1:
                         recon_pair.append(mask) # save mask as well
                         self.train_hist['recon_samples'].append(recon_pair)
-                        rmse_rand = self.rand_eval(recon_pair[1])
-                        print(f'step: {self.steps}, rmse_rand {rmse_rand.item()}')
-                        rmse_lowfreq = self.lowfreq_eval(recon_pair[1])
-                        print(f'step: {self.steps}, rmse_lowfreq {rmse_lowfreq.item()}')
-                        self.train_hist['rmse_cmp'].append([rmse_tmp.item(), rmse_rand.item(), rmse_lowfreq.item()])
+                        
                         
                 ### Compute total gradient norm (for logging purposes) and then clip gradients
                 # for polynet
