@@ -28,8 +28,12 @@ def get_args():
     
     parser.add_argument('-gamma', '--discount-factor', type=float, default=.5,nargs='?',
                         help='discount factor', dest='gamma')
-    parser.add_argument('-slope', '--tanh-slope', type=float, default=1e-3,nargs='?',
+    parser.add_argument('-slope', '--tanh-slope', type=float, default=.5,nargs='?',
                         help='slope for tanh activation', dest='slope')
+    parser.add_argument('-rscale', '--reward-scale', type=float, default=9e2,nargs='?',
+                        help='reward scale', dest='reward_scale')
+    parser.add_argument('-vscale', '--valnet-scale', type=float, default=10,nargs='?',
+                        help='valnet scale', dest='valnet_scale')
     
     parser.add_argument('-e', '--epochs', type=int, default=1,nargs='?',
                         help='epoch', dest='epochs')
@@ -88,7 +92,7 @@ if __name__ == '__main__':
     
     loader  = ocmrLoader(ncfiles,batch_size=1)
     p_net   = poly_net(samp_dim=wid,softmax=True)
-    v_net   = val_net(slope=slope)
+    v_net   = val_net(slope=slope,scale=args.valnet_scale)
     trainer = AC1_ET_trainer(loader, polynet=p_net, valnet=v_net,
                              fulldim=wid, base=base, budget=budget,
                              lambda_poly=tdp, lambda_val=tdv,
@@ -96,5 +100,5 @@ if __name__ == '__main__':
                              max_trajectories=episodes,
                              gamma=discount,
                              solver=solver, max_iter=max_iter, L=L,
-                             ngpu=ngpu)
+                             ngpu=ngpu,reward_scale=args.reward_scale)
     trainer.run()

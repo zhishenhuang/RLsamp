@@ -42,7 +42,7 @@ class poly_net(nn.Module):
        
         
 class val_net(nn.Module):
-    def __init__(self, in_chans=3, slope=.2):
+    def __init__(self, in_chans=3, slope=.2, scale=1):
         super(val_net, self).__init__()
         self.in_chans  = in_chans
         self.mid_chans = 2 * self.in_chans
@@ -53,6 +53,7 @@ class val_net(nn.Module):
         self.fc1   = nn.Linear(1680, 500) 
         self.fc2   = nn.Linear(500, 1)
         self.slope = slope
+        self.scale = scale
     @property
     def num_param(self):
         return sum([p.numel() for p in self.parameters() if p.requires_grad])
@@ -63,5 +64,5 @@ class val_net(nn.Module):
         x = self.pool(Func.leaky_relu(self.conv3(x)))
         x = x.view(-1, 1680)
         x = torch.tanh(self.fc1(x))
-        x = torch.tanh(self.slope * self.fc2(x))
+        x = torch.tanh(self.slope * self.fc2(x)) * self.scale
         return x

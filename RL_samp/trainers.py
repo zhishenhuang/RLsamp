@@ -123,7 +123,7 @@ class DeepQL_trainer():
 #             self.dataloader.reset()
     
     def save(self):
-        filename = f'{type(self.policy).__name__}_doubleQ_{self.policy.double_q_mode}_hist.pt'
+        filename = f'{type(self.policy).__name__}_doubleQ_{self.policy.double_q_mode}_hist_{str(datetime.date.today())}.pt'
         if type(self.policy).__name__.lower() == 'ddqn': 
             torch.save(
                     {
@@ -333,7 +333,6 @@ class AC1_trainer():
                     vnew  = self.valnet(next_obs) if t!=self.horizon-1 else 0
                     delta = reward + self.gamma * vnew  - v # should check if delta == 0
                 self.optimizer_val.zero_grad()
-                breakpoint()
                 val_loss = - delta * v     # Sep 19: val_loss is small in magnitude, not sure if this is an issue
                 val_loss.backward()
                 self.optimizer_val.step()
@@ -401,10 +400,11 @@ class AC1_ET_trainer():
                   lambda_poly:float=.95,
                   lambda_val:float=.95,
                   alpha_poly:float=.3,
-                  alpha_val:float=.3,
+                  alpha_val:float=1e-2,
                   L:float=5e-3,
                   max_iter:int=100,
                   solver:str='ADMM',
+                  reward_scale:float=1,
                   save_dir:str='/home/huangz78/rl_samp/',
                   ngpu:int=1,
                   freq_dqn_checkpoint_save:int=10):
@@ -416,6 +416,7 @@ class AC1_ET_trainer():
         self.base       = int(base)
         self.budget     = int(budget)
         self.gamma      = gamma
+        self.reward_scale = reward_scale
         if horizon is None:
             self.horizon = self.budget
         else:
@@ -520,7 +521,7 @@ class AC1_ET_trainer():
         new_nrmse = NRMSE(next_obs,target_gt)
         reward    = old_nrmse - new_nrmse
         
-        return next_obs, reward, [next_obs,target_gt]
+        return next_obs, reward*self.reward_scale, [next_obs,target_gt]
     
     def rand_eval(self, target_gt):
         mask = mask_naiveRand(self.fulldim,fix=self.base,other=self.budget,roll=False) # curr_state
@@ -623,7 +624,7 @@ class AC1_ET_trainer():
             self.train_hist['horizon_rewards'].append(reward_horizon)
     
     def save(self):
-        filename = f'AC1_ET_hist_base{self.base}_budget{self.budget}.pt'
+        filename = f'AC1_ET_hist_base{self.base}_budget{self.budget}_{str(datetime.date.today())}.pt'
         torch.save(
                     {
                         "polynet_weights": self.polynet.state_dict(),
