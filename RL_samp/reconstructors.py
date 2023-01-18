@@ -12,3 +12,7 @@ def sigpy_solver(ksp,L=5e-3,max_iter=50,heg=192,wid=144,solver='ADMM'):
         x_recon[ind,0,:,:] = torch.tensor(np.fft.ifftshift(np.abs(TotalVariationRecon(ksp[ind,0:1,:,:].numpy(), mps, L,
                     max_iter=max_iter,show_pbar=False,solver=solver).run())) )
     return x_recon
+
+def unet_solver(img,unet):
+    x_recon = unet(img)
+    return x_recon

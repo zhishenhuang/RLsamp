@@ -19,7 +19,9 @@ class DQN():
                       target_model=None,
                       ngpu:int=0,
                       target_net_update_freq:int=20,
-                      reward_scale:float=1):
+                      reward_scale:float=1.,
+                      mag_weight:float=10.,
+                      unet=None):
         self.memory     = memory
         self.init_base  = init_base
         self.gamma      = gamma
@@ -38,6 +40,9 @@ class DQN():
             if target_model is None:
                 target_model = copy.deepcopy(model)
             self.target_model = target_model.cuda() if self.ngpu > 0 else target_model
+        
+        self.mag_weight = mag_weight
+        self.unet = unet
         
     def get_rand_action(self,mask):
         '''
@@ -81,7 +86,7 @@ class DQN():
 #         self.curr_score = NRMSE(img_recon,target)
 #         return new_reward
     
-    def step(self, action, target_gt, mask):
+    def step(self, action, target_gt, mask, epoch=0,epochs=1):
         '''
         action: [1] TODO: adding multiple lines at a time
         mask:[W]
@@ -89,20 +94,27 @@ class DQN():
         target:[N1HW]
         '''
         ### observe target_gt with old freq info
-        target_obs_freq = fft_observe(target_gt,mask,return_opt='freq',roll=True)
-        img_recon = sigpy_solver(target_obs_freq, 
-                                 L=self.L,max_iter=self.max_iter,solver=self.solver,
-                                 heg=target_gt.shape[2],wid=target_gt.shape[3])
+#         target_obs_freq, magnitude = fft_observe(target_gt,mask,return_opt='freq',roll=True, action=action) # changed, Dec 29
+#         img_recon = sigpy_solver(target_obs_freq, 
+#                                  L=self.L,max_iter=self.max_iter,solver=self.solver,
+#                                  heg=target_gt.shape[2],wid=target_gt.shape[3])
+        target_obs_freq, magnitude = fft_observe(target_gt,mask,return_opt='img', action=action)
+        breakpoint()
+        img_recon = unet_solver(target_obs_freq, self.unet)
         old_nrmse = NRMSE(img_recon,target_gt)
         
         ### observe target_gt with new freq info
         mask[action] = 1 # incorporate action into mask
-        target_obs_freq = fft_observe(target_gt,mask,return_opt='freq',roll=True)
-        next_obs = sigpy_solver(target_obs_freq, 
-                                 L=self.L,max_iter=self.max_iter,solver=self.solver,
-                                 heg=target_gt.shape[2],wid=target_gt.shape[3])
+#         target_obs_freq = fft_observe(target_gt,mask,return_opt='freq',roll=True)
+#         next_obs = sigpy_solver(target_obs_freq, 
+#                                  L=self.L,max_iter=self.max_iter,solver=self.solver,
+#                                  heg=target_gt.shape[2],wid=target_gt.shape[3])
+        target_obs_freq = fft_observe(target_gt,mask,return_opt='img')
+        next_obs = unet_solver(target_obs_freq, self.unet)
         new_nrmse = NRMSE(next_obs,target_gt)
-        reward = old_nrmse - new_nrmse
+        
+        ## update reward: Dec 29, add the term giving weight to the magnitude of the added frequency line
+        reward = old_nrmse - new_nrmse + max(np.cos(epoch/epochs*np.pi/2),0) * self.mag_weight * magnitude
         
         return next_obs, reward*self.reward_scale, mask, [next_obs,target_gt]
     

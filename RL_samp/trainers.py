@@ -18,7 +18,7 @@ class DeepQL_trainer():
         
         self.policy   = policy
         self.episodes = episodes
-        self.epi      = 0
+        self.episode  = 0
         self.fulldim  = fulldim
         self.base     = base
         self.budget   = budget
@@ -39,15 +39,16 @@ class DeepQL_trainer():
     def lowfreq_eval(self, target_gt):
         mask = mask_naiveRand(self.fulldim,fix=self.base+self.budget,other=0,roll=False) # curr_state
         target_obs_freq = fft_observe(target_gt,mask,return_opt='freq',roll=True) # roll=True because using sigpy
-        recon_lowfreq   = sigpy_solver(target_obs_freq, 
-                                 L=self.policy.L,max_iter=self.policy.max_iter,solver=self.policy.solver,
-                                 heg=target_gt.shape[2],wid=target_gt.shape[3])
+#         recon_lowfreq   = sigpy_solver(target_obs_freq, 
+#                                  L=self.policy.L,max_iter=self.policy.max_iter,solver=self.policy.solver,
+#                                  heg=target_gt.shape[2],wid=target_gt.shape[3])
         return NRMSE(recon_lowfreq,target_gt)
     
     def train(self):  
         # run training
         while (self.dataloader.reset_count-1)//self.dataloader.file_count<self.episodes:
             print(f'epoch [{self.dataloader.reset_count//self.dataloader.file_count +1}/{self.episodes}] file [{self.dataloader.reset_count%self.dataloader.file_count}/{self.dataloader.file_count}] rep [{self.dataloader.rep +1}/{self.dataloader.rep_ubd}] slice [{self.dataloader.slice +1}/{self.dataloader.slice_ubd}]')
+            
             mask = mask_naiveRand(self.fulldim,fix=self.base,other=0,roll=False)   
             # one mask at a time, start with a low frequency mask
             horizon_reward_total = 0
@@ -62,7 +63,7 @@ class DeepQL_trainer():
                 with torch.no_grad():
                     action = self.policy.get_action(curr_obs, mask=mask_RL, eps_threshold=self.eps)
 #                     print(f'step {self.steps}, action {action}')
-                    next_obs, reward, mask_RL, recon_pair_RL = self.policy.step(action, data_target, mask_RL)
+                    next_obs, reward, mask_RL, recon_pair_RL = self.policy.step(action, data_target, mask_RL, self.episode, self.episodes) # modified, Dec29
 #                     print(f'step: {self.steps}, policy.step, mask_RL sum: {mask_RL.sum().item()}')
                     horizon_reward_total += reward
                     self.policy.memory.push(curr_obs, mask, action, next_obs, reward)
@@ -118,6 +119,8 @@ class DeepQL_trainer():
                     if self.steps % self.policy.target_net_update_freq == 0:
                         self.policy.target_model.load_state_dict(self.policy.model.state_dict())
                         print(f'  ~~ At step {self.steps}, target_net is updated. ~~')
+                self.episode = (self.dataloader.reset_count-1)//self.dataloader.file_count
+                
             self.training_record['horizon_rewards'].append(horizon_reward_total)
             print(f'step: {self.steps}, episode reward: {horizon_reward_total}')
 #             self.dataloader.reset()
@@ -149,8 +152,7 @@ class RL_tester():
         self.dataloader = dataloader
         self.dataloader.reset()
         self.policy   = policy
-        self.epi      = 0
-        self.episodes = self.dataloader.files
+        
         self.fulldim  = fulldim # full size of the dimension to be sampled
         self.base     = base
         self.budget   = budget
@@ -176,7 +178,7 @@ class RL_tester():
     #                 epsilon = _get_epsilon(steps_epsilon, self.options)
                     curr_obs = fft_observe(data_source,mask)
                     action   = self.policy.get_action(curr_obs, mask=mask, eps_threshold=self.eps)
-                    next_obs, _, mask, _ = self.policy.step(action, data_target, mask)  # inplace mask change
+                    next_obs, _, mask, _ = self.policy.step(action, data_target, mask, epoch=1)  # inplace mask change
 
                 ### Do reconstruction 
                 self.dataloader.reset_iter() # modifying while loop condition
@@ -184,19 +186,19 @@ class RL_tester():
                 self.dataloader.train_mode = False
                 
                 data_source, data_target = self.dataloader.load()
-                while (data_source is not None):                    
+                while (data_source is not None): # verify correctness                  
                     curr_obs   = fft_observe(data_source, mask, return_opt='freq', roll=True)
-                    img_recon  = sigpy_solver( curr_obs, 
-                                                 L=self.policy.L,
-                                                 max_iter=self.policy.max_iter,
-                                                 solver=self.policy.solver,
-                                                 heg=curr_obs.shape[2],wid=curr_obs.shape[3] )
+                    img_recon  = sigpy_solver(curr_obs, 
+                                               L=self.policy.L,
+                                               max_iter=self.policy.max_iter,
+                                               solver=self.policy.solver,
+                                               heg=curr_obs.shape[2],wid=curr_obs.shape[3] )
                     curr_nrmse = NRMSE(img_recon,data_source)
                     epi_loss    += curr_nrmse * curr_obs.shape[0]
                     slice_count += curr_obs.shape[0]
                     data_source, data_target = self.dataloader.load()
-
-                self.testRec[self.epi] = epi_loss / slice_count
+                
+                self.testRec[self.dataloader.reset_count] = epi_loss / slice_count
     #                 if self.steps % self.options.target_net_update_freq == 0:
     #                     self.logger.info("Updating target network.")
     #                     self.target_net.load_state_dict(self.policy.state_dict())
@@ -543,6 +545,7 @@ class AC1_ET_trainer():
         
         while (self.dataloader.reset_count-1)//self.dataloader.file_count<self.max_trajectories:
             print(f'epoch [{self.dataloader.reset_count//self.dataloader.file_count +1}/{self.max_trajectories}] file [{self.dataloader.reset_count%self.dataloader.file_count}/{self.dataloader.file_count}] rep [{self.dataloader.rep +1}/{self.dataloader.rep_ubd}] slice [{self.dataloader.slice +1}/{self.dataloader.slice_ubd}]')
+            
             self.trace_init()
             mask = mask_naiveRand(self.fulldim,fix=self.base,other=0,roll=False) # curr_state
             I = 1

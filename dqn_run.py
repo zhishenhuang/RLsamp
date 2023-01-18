@@ -6,6 +6,10 @@ from RL_samp.models import poly_net, val_net
 from RL_samp.reconstructors import sigpy_solver
 from RL_samp.policies import DQN
 from RL_samp.trainers import DeepQL_trainer
+from unet.unet_model import UNet
+from unet.unet_model_fbr import Unet
+from unet.unet_model_banding_removal_fbr import UnetModel
+
 
 from importlib import reload
 
@@ -29,9 +33,9 @@ def get_args():
                         help='t backtrack', dest='t_backtrack')
     parser.add_argument('-b', '--batchsize', type=int, default=3,nargs='?',
                         help='batchsize', dest='batchsize')
-    parser.add_argument('-base', '--base-sample', type=int, default=5,nargs='?',
+    parser.add_argument('-i', '--base-sample', type=int, default=5,nargs='?',
                         help='base', dest='base')
-    parser.add_argument('-bugdet', '--budget-sample', type=int, default=13,nargs='?',
+    parser.add_argument('-s', '--budget-sample', type=int, default=13,nargs='?',
                         help='budget', dest='budget')
     parser.add_argument('-gamma', '--discount-factor', type=float, default=.5,nargs='?',
                         help='discount factor', dest='gamma')
@@ -46,6 +50,11 @@ def get_args():
     parser.add_argument('-sfreq', '--save-frequency', type=int, default=10,nargs='?',
                         help='save frequency', dest='save_frequency')
     
+    parser.add_argument('-utype', '--unet-type', type=int, default=2,
+                        help='type of unet', dest='utype')
+    parser.add_argument('-upath', '--unet-path', type=str, default=10,nargs='?',
+                        help='unet_path', dest='unet_path')
+    
     return parser.parse_args()
 
 
@@ -54,11 +63,32 @@ if __name__ == '__main__':
     args = get_args()
     print(args)
     
-    datapath = '/mnt/shared_a/OCMR/OCMR_fully_sampled_images/'
+    datapath = '/home/ec2-user/SageMaker/data/OCMR_fully_sampled_images/'
+    savepath = '/home/ec2-user/SageMaker/RLsamp/output/'
+    ## import useful data files
     ncfiles = list([])
     for file in os.listdir(datapath):
-        if file.endswith(".pt"):
+        if file.endswith(".pt") and file.startswith('fs'):
             ncfiles.append(file)
+    print('Number of useful files: ', len(ncfiles))
+    
+    if args.utype == 1:
+        unet = UNet(in_chans=args.in_chans,n_classes=1,bilinear=(not skip),skip=skip).to(device)
+    elif args.utype == 2: ## Unet from FBR
+        unet = Unet(in_chans=args.in_chans,out_chans=1,chans=args.chans,num_pool_layers=args.unet_layers,drop_prob=0).to(device)
+    elif args.utype == 3: ## Unet from FBR, res
+        unet = UnetModel(in_chans=args.in_chans,out_chans=1,chans=args.chans,num_pool_layers=args.unet_layers,drop_prob=0,variant='res').to(device)
+    elif args.utype == 4: ## Unet from FBR, dense
+        unet = UnetModel(in_chans=args.in_chans,out_chans=1,chans=args.chans,num_pool_layers=args.unet_layers,drop_prob=0,variant='dense').to(device)
+    
+    if args.unet_path is not None:
+        checkpoint = torch.load(args.unet_path)
+        unet.load_state_dict(checkpoint['model_state_dict'])
+        print('Unet loaded successfully from: ' + args.unet_path )
+    else:
+        #         unet.apply(nn_weights_init)
+        print('Unet is randomly initalized!')
+    unet.train()   
         
     ## image parameters
     heg = 192
@@ -84,7 +114,7 @@ if __name__ == '__main__':
     double_q    = args.double_q
     
     
-    loader  = ocmrLoader(ncfiles,batch_size=1)
+    loader  = ocmrLoader(ncfiles,batch_size=1,datapath=datapath)
     memory  = ReplayMemory(capacity=memory_len,
                            curr_obs_shape=(t_backtrack,heg,wid),
                            mask_shape=(wid),
@@ -92,9 +122,10 @@ if __name__ == '__main__':
                            batch_size=batch_size,
                            burn_in=batch_size)
     model   = poly_net(samp_dim=wid,in_chans=t_backtrack)
-    policy  = DQN(model,memory,max_iter=max_iter,ngpu=ngpu,gamma=discount,lr=lr,double_q_mode=double_q)
+    policy  = DQN(model,memory,max_iter=max_iter,ngpu=ngpu,gamma=discount,lr=lr,double_q_mode=double_q,unet=unet)
     trainer = DeepQL_trainer(loader,policy,episodes=episodes,
                              eps=eps,
                              base=base,budget=budget,
-                             ngpu=ngpu)
+                             ngpu=ngpu,
+                             save_dir=savepath)
     trainer.train()
