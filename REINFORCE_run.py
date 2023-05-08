@@ -2,9 +2,9 @@ import RL_samp
 from RL_samp.header import *
 from RL_samp.utils  import *
 from RL_samp.replay_buffer import *
-from RL_samp.models import poly_net, val_net
+from RL_samp.models import poly_net
 from RL_samp.reconstructors import sigpy_solver
-from RL_samp.trainers import AC1_ET_trainer
+from RL_samp.REINFORCE import REINFORCE_trainer
 
 from unet.unet_model import UNet
 from unet.unet_model_fbr import Unet
@@ -20,40 +20,29 @@ def get_args():
     parser = argparse.ArgumentParser(description='policy gradient for dynamic MRI sampling',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     
-    parser.add_argument('-tdv', '--trace-decay-val',  type=float, default=.8,nargs='?',
-                        help='trace decay rate lambda for value network', dest='tdv')
-    parser.add_argument('-tdp', '--trace-decay-poly', type=float, default=.8,nargs='?',
-                        help='trace decay rate lambda for policy network', dest='tdp')
     
-    parser.add_argument('-lrv', '--step-size-val',  type=float, default=1e-5,nargs='?',
-                        help='step size alpha for value network', dest='lrv')
     parser.add_argument('-lrp', '--step-size-poly', type=float, default=1e-5,nargs='?',
                         help='step size alpha for policy network', dest='lrp')
     
-    parser.add_argument('-gamma', '--discount-factor', type=float, default=1-1e-5,nargs='?',
+    parser.add_argument('-gamma', '--discount-factor', type=float, default=1-1e-4,nargs='?',
                         help='discount factor', dest='gamma')
     parser.add_argument('-slope', '--tanh-slope', type=float, default=.5,nargs='?',
                         help='slope for tanh activation', dest='slope')
     parser.add_argument('-rscale', '--reward-scale', type=float, default=1,nargs='?',
                         help='reward scale', dest='reward_scale')
-    parser.add_argument('-vscale', '--valnet-scale', type=float, default=1,nargs='?',
-                        help='valnet scale', dest='valnet_scale')
     
     parser.add_argument('-magweg', '--magnitude-weight', type=float, default=5,nargs='?',
                         help='magnitude weight', dest='mag_weight')
     
     parser.add_argument('-e', '--epochs', type=int, default=50,nargs='?',
                         help='epoch', dest='epochs')
-    parser.add_argument('-tb', '--t-backtrack', type=int, default=3,nargs='?',
+    parser.add_argument('-tb', '--t-backtrack', type=int, default=8,nargs='?',
                         help='t backtrack', dest='t_backtrack')
     
     parser.add_argument('-base', '--base-sample', type=int, default=8,nargs='?',
                         help='base', dest='base')
     parser.add_argument('-bugdet', '--budget-sample', type=int, default=16,nargs='?',
                         help='budget', dest='budget')
-    
-    parser.add_argument('-maxiter', '--max-iteration', type=int, default=50,nargs='?',
-                        help='max iteration of sigpy solver', dest='maxiter')
     
     parser.add_argument('-sfreq', '--save-frequency', type=int, default=10,nargs='?',
                         help='save frequency', dest='save_frequency')
@@ -80,8 +69,13 @@ def get_args():
                         help='number of GPUs', dest='ngpu')
     parser.add_argument('-gid', '--gpu-id', type=int, nargs='?', default=0,
                         help='GPU ID', dest='gpu_id')
+    
+    parser.add_argument('-whiten', '--whitening-switch', type=bool, nargs='?', default=False,
+                        help='whitening switch', dest='whitening')
     parser.add_argument('-istr', '--info-str', type=str, default=None,nargs='?',
                         help='info string to put in the saved data', dest='infostr')
+    parser.add_argument('-hreg', '--entropy-regscale', type=float, default=0,nargs='?',
+                        help='entropy reg scale', dest='entropy_reg_scale')
     
     return parser.parse_args()
 
@@ -97,10 +91,7 @@ if __name__ == '__main__':
     device_alt = torch.device('cpu') if args.ngpu==0 else [torch.device(f"cuda:{gpu_id1_alt}"),torch.device(f"cuda:{gpu_id2_alt}")]
     savepath = '/home/ec2-user/SageMaker/RLsamp/output/'
     datapath = '/home/ec2-user/SageMaker/data/OCMR_fully_sampled_images/'
-#     ncfiles  = list([])
-#     for file in os.listdir(datapath):
-#         if file.endswith(".pt"):
-#             ncfiles.append(file)
+
     ncfiles = np.load('/home/ec2-user/SageMaker/RLsamp/train_files.npz')['files']
     print('Number of Train files: ', len(ncfiles))
         
@@ -108,17 +99,9 @@ if __name__ == '__main__':
     heg = 192
     wid = 144
 
-    ## reconstructor parameters
-    max_iter = args.maxiter
-    L        = 5e-3
-    solver   = 'ADMM' # ‘ConjugateGradient’, ‘GradientMethod’, ‘PrimalDualHybridGradient’
-
     ## trainer parameters
     discount    = args.gamma
     lrp         = args.lrp
-    lrv         = args.lrv
-    tdp         = args.tdp
-    tdv         = args.tdv
     
     t_backtrack = args.t_backtrack
     base        = args.base
@@ -129,6 +112,7 @@ if __name__ == '__main__':
     slope       = args.slope
     
     ####################################################################################################
+    ## reconstructors
     if args.utype == 1:
         unet = UNet(in_chans=args.in_chans,n_classes=1,bilinear=(not skip),skip=skip).to(device_alt[0])
     elif args.utype == 2: ## Unet from FBR
@@ -162,14 +146,11 @@ if __name__ == '__main__':
     
     loader  = ocmrLoader(ncfiles,batch_size=1,datapath=datapath,t_backtrack=t_backtrack)
     p_net   = poly_net(samp_dim=wid,softmax=True,in_chans=t_backtrack)
-    v_net   = val_net(slope=slope,scale=args.valnet_scale,in_chans=t_backtrack)
-    trainer = AC1_ET_trainer(loader, polynet=p_net, valnet=v_net,
+    
+    trainer = REINFORCE_trainer(loader, polynet=p_net, lr=lrp,
                              fulldim=wid, base=base, budget=budget,
-                             lambda_poly=tdp, lambda_val=tdv,
-                             alpha_poly=lrp,  alpha_val=lrv,
                              max_trajectories=episodes,
                              gamma=discount,
-                             solver=solver, max_iter=max_iter, L=L,
                              device=device, device_alt=device_alt,
                              reward_scale=args.reward_scale,
                              save_dir=savepath,
@@ -178,6 +159,8 @@ if __name__ == '__main__':
                              lowfreq_eval_unet=unet_lowfreq,
                              mag_weight=args.mag_weight,
                              infostr=args.infostr,
-                             guide_epochs=args.guideEpoch)
+                             guide_epochs=args.guideEpoch,
+                             whitening=args.whitening,
+                             entropy_reg_scale=args.entropy_reg_scale)
     trainer.run()
     print(args)

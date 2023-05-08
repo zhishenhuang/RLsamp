@@ -1,6 +1,6 @@
 from .header import *
 from .utils  import *
-from .reconstructors import sigpy_solver
+from .reconstructors import sigpy_solver, unet_solver
 
 class DQN():
     '''
@@ -17,11 +17,12 @@ class DQN():
                       solver:str='ADMM',
                       double_q_mode=False,
                       target_model=None,
-                      ngpu:int=0,
+                      device=torch.device('cpu'),
                       target_net_update_freq:int=20,
                       reward_scale:float=1.,
                       mag_weight:float=10.,
-                      unet=None):
+                      unet=None,
+                      maxGuideEp=0):
         self.memory     = memory
         self.init_base  = init_base
         self.gamma      = gamma
@@ -30,20 +31,20 @@ class DQN():
         self.L = L
         self.max_iter = max_iter
         self.solver = 'ADMM'
-        self.ngpu   = ngpu
+        self.device = device
         self.reward_scale = reward_scale     
-        self.model  = model.cuda() if self.ngpu > 0 else model
+        self.model  = model.to(self.device)
         self.optimizer = optim.Adam(self.model.parameters(), lr=lr)
         self.target_net_update_freq = target_net_update_freq
         self.double_q_mode = double_q_mode
         if double_q_mode:
             if target_model is None:
                 target_model = copy.deepcopy(model)
-            self.target_model = target_model.cuda() if self.ngpu > 0 else target_model
+            self.target_model = target_model.to(self.device)
         
         self.mag_weight = mag_weight
         self.unet = unet
-        
+        self.maxGuideEp = maxGuideEp
     def get_rand_action(self,mask):
         '''
         here the mask is 1D
@@ -64,10 +65,7 @@ class DQN():
                 loc = self.get_rand_action(mask)
             else: # use model
                 assert(len(mask.shape)==1)
-                if self.ngpu > 0:
-                    res  = self.model(data.cuda(),mask.cuda())
-                else:
-                    res  = self.model(data,mask) # Jul 5, add mask here as second input
+                res  = self.model(data.to(self.device),mask.to(self.device)) # Jul 5, add mask here as second input
                 vals,locs = torch.max(res,dim=1)
                 vals = vals / vals.sum()
                 loc  = np.random.choice(locs.cpu().numpy(), 1, p=vals.cpu().numpy())[0]
@@ -86,7 +84,7 @@ class DQN():
 #         self.curr_score = NRMSE(img_recon,target)
 #         return new_reward
     
-    def step(self, action, target_gt, mask, epoch=0,epochs=1):
+    def step(self, action, target_gt, mask, epoch=0):
         '''
         action: [1] TODO: adding multiple lines at a time
         mask:[W]
@@ -98,10 +96,9 @@ class DQN():
 #         img_recon = sigpy_solver(target_obs_freq, 
 #                                  L=self.L,max_iter=self.max_iter,solver=self.solver,
 #                                  heg=target_gt.shape[2],wid=target_gt.shape[3])
-        target_obs_freq, magnitude = fft_observe(target_gt,mask,return_opt='img', action=action)
-        breakpoint()
-        img_recon = unet_solver(target_obs_freq, self.unet)
-        old_nrmse = NRMSE(img_recon,target_gt)
+        target_obs_freq, magnitude = fft_observe(target_gt, mask, return_opt='img', action=action, abs_opt=False)
+        img_recon = unet_solver(target_obs_freq.to(self.device), self.unet) # target_obs_freq dim: [N, 2, H, W]
+        old_nrmse = NRMSE(img_recon,target_gt.to(self.device))
         
         ### observe target_gt with new freq info
         mask[action] = 1 # incorporate action into mask
@@ -109,23 +106,23 @@ class DQN():
 #         next_obs = sigpy_solver(target_obs_freq, 
 #                                  L=self.L,max_iter=self.max_iter,solver=self.solver,
 #                                  heg=target_gt.shape[2],wid=target_gt.shape[3])
-        target_obs_freq = fft_observe(target_gt,mask,return_opt='img')
-        next_obs = unet_solver(target_obs_freq, self.unet)
-        new_nrmse = NRMSE(next_obs,target_gt)
+        target_obs_freq = fft_observe(target_gt,mask,return_opt='img', abs_opt=False)
+        next_obs  = unet_solver(target_obs_freq.to(self.device), self.unet)
+        new_nrmse = NRMSE(next_obs,target_gt.to(self.device))
         
         ## update reward: Dec 29, add the term giving weight to the magnitude of the added frequency line
-        reward = old_nrmse - new_nrmse + max(np.cos(epoch/epochs*np.pi/2),0) * self.mag_weight * magnitude
+        reward_extra = max(np.cos(epoch/self.maxGuideEp*np.pi/2),0) * self.mag_weight * magnitude if self.maxGuideEp > 0 else torch.tensor(0).to(self.device)
+        reward = max(old_nrmse - new_nrmse, 0) + reward_extra
         
-        return next_obs, reward*self.reward_scale, mask, [next_obs,target_gt]
+        return next_obs, reward*self.reward_scale, mask, [next_obs,target_gt.to(self.device)]
     
     def update_parameters(self):
         self.model.train()
         batch = self.memory.sample()
         if batch is None:
             return None
-        if self.ngpu > 0:
-            for key in batch.keys():
-                batch[key] = batch[key].cuda()
+        for key in batch.keys():
+            batch[key] = batch[key].to(self.device)
         ########################################
         #### Q-learning Bellman equation:
         #### min ||( Reward + gamma * max_a' Q(s',a') ) - Q_predicted||_2^2
@@ -156,8 +153,7 @@ class DQN():
                 else:
                     all_q_values_next = self.model(next_obs,mask=next_mask)
                 target_values = torch.zeros(self.memory.batch_size)
-                if self.ngpu>0:
-                    target_values = target_values.cuda()
+                target_values = target_values.to(self.device)
                 best_actions  = all_q_values_next.detach().max(1)[1]
                 target_values = all_q_values_next.gather(1,best_actions.unsqueeze(1))
                 target_values = self.gamma * target_values + rewards

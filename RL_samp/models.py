@@ -1,6 +1,10 @@
 from .header import *
 
 class poly_net(nn.Module):
+    '''
+    input:  [N, t_backtrack, height, width] in the image domain -> Pineda et al.
+    output: [N, 1]
+    '''
     def __init__(self, samp_dim=144, in_chans=3, softmax=False):
         super(poly_net, self).__init__()
         self.softmax = softmax
@@ -13,7 +17,7 @@ class poly_net(nn.Module):
         self.conv2 = nn.Conv2d(in_channels=self.mid_chans,   out_channels=2*self.mid_chans, kernel_size=3,stride=1)
         self.conv3 = nn.Conv2d(in_channels=2*self.mid_chans, out_channels=4*self.mid_chans, kernel_size=3,stride=1)
         self.pool  = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.fc1   = nn.Linear(1680, 500) 
+        self.fc1   = nn.Linear(4480, 500) # t_traceback = 3 -> 1680, t_traceback = 8 -> 4480
         self.fc2   = nn.Linear(500, samp_dim)
     
     @property
@@ -32,7 +36,7 @@ class poly_net(nn.Module):
         x = self.pool(Func.relu(self.conv1(img_input)))
         x = self.pool(Func.relu(self.conv2(x)))
         x = self.pool(Func.relu(self.conv3(x)))
-        x = x.view(-1, 1680)
+        x = x.view(-1, 4480)
         x = Func.relu(self.fc1(x))
         x = self.fc2(x)
         if self.softmax:
@@ -50,7 +54,7 @@ class val_net(nn.Module):
         self.conv2 = nn.Conv2d(in_channels=self.mid_chans,   out_channels=2*self.mid_chans, kernel_size=3,stride=1)
         self.conv3 = nn.Conv2d(in_channels=2*self.mid_chans, out_channels=4*self.mid_chans, kernel_size=3,stride=1)
         self.pool  = nn.MaxPool2d(kernel_size=2, stride=2)
-        self.fc1   = nn.Linear(1680, 500) 
+        self.fc1   = nn.Linear(4480, 500) 
         self.fc2   = nn.Linear(500, 1)
         self.slope = slope
         self.scale = scale
@@ -62,7 +66,7 @@ class val_net(nn.Module):
         x = self.pool(Func.leaky_relu(self.conv1(img_input)))
         x = self.pool(Func.leaky_relu(self.conv2(x)))
         x = self.pool(Func.leaky_relu(self.conv3(x)))
-        x = x.view(-1, 1680)
-        x = torch.tanh(self.fc1(x))
-        x = torch.tanh(self.slope * self.fc2(x)) * self.scale
+        x = x.view(-1, 4480)
+        x = Func.relu(self.fc1(x))   # Mar 1: changed from torch.tanh to Func.relu
+        x = self.slope * self.fc2(x) # Mar 1: changed from torch.tanh to Func.relu, and deleted scale
         return x

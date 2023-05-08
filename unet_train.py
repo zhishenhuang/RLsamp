@@ -10,8 +10,9 @@ class dataloader():
     
     def __init__(self,data_dir='/home/ec2-user/SageMaker/data/OCMR_fully_sampled_images/',
                  unet_inchans=2,budget=32,base=8,
-                 datatype=torch.float, eps=3, train_percentage=0.7, ncfiles=None, train_mode=True,
-                 rand_mask_percentage=.5,device=torch.device('cpu')):
+                 datatype=torch.float, train_percentage=0.7, ncfiles=None, train_mode=True,
+                 rand_mask_percentage=.5,device=torch.device('cpu'),
+                 mask_mode='lowfreq'):
         self.data_dir = Path(data_dir)
         if ncfiles is None:
             ncfiles = list([])
@@ -25,19 +26,20 @@ class dataloader():
             self.files = ncfiles[0:train_file_num]
         else:
             self.files = ncfiles
+            print('Number of Train files: ', len(self.files))
         
         self.filenum = len(self.files)
        
         self.base   = base
         self.budget = budget
-        self.eps    = eps
         self.rand_mask_percentage = rand_mask_percentage
         self.unet_inchans = unet_inchans
         self.datatype = datatype
         self.train_mode = train_mode
         self.file_ind = 0
         self.device = device
-    
+        self.mask_mode = mask_mode
+        
     def select_file(self):
         if self.train_mode:
             ind = np.random.choice(len(self.files))
@@ -77,12 +79,13 @@ class dataloader():
             curr_data = torch.unsqueeze(curr_data, 1)
 
             curr_fft = F.fftn(curr_data,dim=(2,3),norm='ortho')
-            eps1 = random.randint(-self.eps, self.eps)
-            eps2 = random.randint(-self.eps, self.eps)
             if np.random.rand() < self.rand_mask_percentage:
-                mask = mask_naiveRand(W,fix=self.base+eps1,other=self.budget+eps2,roll=False) 
+                mask = mask_naiveRand(W,fix=self.base,other=self.budget,roll=False) 
             else:
-                mask = mask_prob(curr_fft,fix=self.base+eps1,other=self.budget+eps2,roll=False,fft_input=True)
+                if self.mask_mode == 'lowfreq':
+                    mask = mask_naiveRand(W,fix=self.base+self.budget,other=0,roll=False)
+                elif self.mask_mode == 'prob':
+                    mask = mask_prob(curr_fft,fix=self.base,other=self.budget,roll=False,fft_input=True)
             curr_fft[:,:,:,mask==0] = 0
             masked_data = F.ifftn(curr_fft,dim=(2,3),norm='ortho')
             if self.unet_inchans == 1:
@@ -117,9 +120,10 @@ class unet_trainer:
                  epochs:int=5,
                  infos:str=None,
                  max_batchsize:int=10,
+                 device=torch.device("cpu")
                  ):
         self.ngpu   = ngpu
-        self.device = torch.device('cuda:0') if ngpu > 0 else torch.device('cpu')
+        self.device = device
         self.net    = net.to(device)
         
         self.train_loader = train_loader
@@ -141,14 +145,14 @@ class unet_trainer:
         self.max_batchsize = max_batchsize
         self.hist   = []
         
-        self.save_model = True
-        self.train_df_loss = [] 
-        self.train_ssim_loss = []
+        self.save_model       = True
+        self.train_df_loss    = [] 
+        self.train_ssim_loss  = []
         self.train_loss_epoch = []
-        self.val_df_loss = []
-        self.val_ssim_loss = []
-        self.val_loss_epoch = []
-        self.valloss_old = np.inf
+        self.val_df_loss      = []
+        self.val_ssim_loss    = []
+        self.val_loss_epoch   = []
+        self.valloss_old      = np.inf
         
     def validate(self,epoch=-1):
         valloss = 0
@@ -196,7 +200,7 @@ class unet_trainer:
         return valloss_epoch
     
     def save(self,epoch=0,batchind=None):
-        recName_base = self.dir_checkpoint + f'TrainRec_unet_fbr_{str(self.net.in_chans)}_chans_{str(self.net.chans)}'
+        recName_base = self.dir_checkpoint + f'TrainRec_{self.train_loader.mask_mode}_rand_{self.train_loader.rand_mask_percentage}_unet_fbr_{str(self.net.in_chans)}_chans_{str(self.net.chans)}'
         
         if self.infos is not None:
             recName_base = recName_base + self.infos
@@ -212,7 +216,7 @@ class unet_trainer:
         
         if (self.save_model) or (batchind is not None):
             
-            modelName_base = self.dir_checkpoint + f'unet_fbr_{str(self.net.in_chans)}_chans_{str(self.net.chans)}'
+            modelName_base = self.dir_checkpoint + f'unet_{self.train_loader.mask_mode}_rand_{self.train_loader.rand_mask_percentage}_fbr_{str(self.net.in_chans)}_chans_{str(self.net.chans)}'
             
             if self.infos is not None:
                 modelName_base = modelName_base + self.infos           
@@ -237,7 +241,6 @@ class unet_trainer:
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=self.patience, verbose=True, min_lr=self.min_lr,factor=self.reduce_factor)
         #         criterion = nn.MSELoss() 
         
-#         breakpoint() 
         _ = self.validate(epoch=0)
         try:    
             for epoch in range(self.epochs):
@@ -306,7 +309,7 @@ def get_args():
     
     parser.add_argument('-lr', '--learning-rate', metavar='LR', type=float, nargs='?', default=1e-5,
                         help='Learning rate', dest='lr')
-    parser.add_argument('-lrwd', '--lr-weight-decay', metavar='LRWD', type=float, nargs='?', default=0,
+    parser.add_argument('-lrwd', '--lr-weight-decay', metavar='LRWD', type=float, nargs='?', default=1e-5,
                         help='Learning rate weight decay', dest='lrwd')
 
     parser.add_argument('-utype', '--unet-type', type=int, default=2,
@@ -347,6 +350,15 @@ def get_args():
     
     parser.add_argument('-train-per', '--training-percentage', metavar='TP', type=float, nargs='?', default=.7,
                         help='percentage of files for training', dest='training_percentage')
+    
+    parser.add_argument('-rand-per', '--random-mask-percentage', type=float, nargs='?', default=0.5,
+                        help='percentage of random masks used in training', dest='rand_mask_percentage')
+    
+    parser.add_argument('-mix-type', '--mix-mask-type', type=str, nargs='?', default='lowfreq',
+                        help='type of mixed mask, can be prob or lowfreq', dest='mix_type')
+    
+    parser.add_argument('-gid', '--gpu-id', type=int, nargs='?', default=0,
+                        help='GPU ID', dest='gpu_id')
     return parser.parse_args()
         
 if __name__ == '__main__':  
@@ -367,7 +379,7 @@ if __name__ == '__main__':
     else:
         save_cp = True
     
-    device = torch.device("cuda:0" if (torch.cuda.is_available() and args.ngpu > 0) else "cpu")
+    device = torch.device(f"cuda:{args.gpu_id}" if (torch.cuda.is_available() and args.ngpu > 0) else "cpu")
     
     if args.utype == 1:
         unet = UNet(in_chans=args.in_chans,n_classes=1,bilinear=(not skip),skip=skip).to(device)
@@ -387,8 +399,6 @@ if __name__ == '__main__':
         print('Unet is randomly initalized!')
     unet.train()        
     
-    device = torch.device('cuda:0') if args.ngpu > 0 else torch.device('cpu')
-    
     infos = f'base{args.base_freq}_budget{args.budget}'
     
     dir_checkpoint = '/home/ec2-user/SageMaker/RLsamp/output/'
@@ -396,20 +406,26 @@ if __name__ == '__main__':
         os.mkdir(dir_checkpoint)
     
     data_dir='/home/ec2-user/SageMaker/data/OCMR_fully_sampled_images/'
-    ncfiles = list([])
-    for file in os.listdir(data_dir):
-        if file.endswith(".pt") and file.startswith('fs'):
-            ncfiles.append(file)
-    random.shuffle(ncfiles)
-    print('Number of useful files: ', len(ncfiles))
-    train_file_num = int(np.ceil(args.training_percentage*len(ncfiles)))
-    print('Number of Train  files: ', train_file_num)
-    print('Number of Val.   files: ', len(ncfiles)-train_file_num)
-    train_files = ncfiles[0:train_file_num]
-    val_files   = ncfiles[train_file_num:]
+#     ncfiles = list([])
+#     for file in os.listdir(data_dir):
+#         if file.endswith(".pt") and file.startswith('fs'):
+#             ncfiles.append(file)
+#     random.shuffle(ncfiles)
+#     print('Number of useful files: ', len(ncfiles))
+#     train_file_num = int(np.ceil(args.training_percentage*len(ncfiles)))
+#     print('Number of Train  files: ', train_file_num)
+#     print('Number of Val.   files: ', len(ncfiles)-train_file_num)
+#     train_files = ncfiles[0:train_file_num]
+#     val_files   = ncfiles[train_file_num:]
+    train_files = np.load('/home/ec2-user/SageMaker/RLsamp/train_files.npz')['files']
+    val_files   = np.load('/home/ec2-user/SageMaker/RLsamp/test_files.npz')['files']
+    print('Number of Train files: ', len(train_files))
+    print('Number of Val.  files: ', len(val_files))
+
+
     
-    train_dataloader = dataloader(base=args.base_freq, budget=args.budget, ncfiles=train_files, train_mode=True,device=device)
-    val_dataloader   = dataloader(base=args.base_freq, budget=args.budget, ncfiles=val_files,  train_mode=False,device=device)
+    train_dataloader = dataloader(base=args.base_freq, budget=args.budget, ncfiles=train_files, train_mode=True,device=device, rand_mask_percentage=args.rand_mask_percentage, mask_mode=args.mix_type)
+    val_dataloader   = dataloader(base=args.base_freq, budget=args.budget, ncfiles=val_files,  train_mode=False,device=device, rand_mask_percentage=args.rand_mask_percentage, mask_mode=args.mix_type)
     trainer = unet_trainer(unet, train_dataloader, val_dataloader,
                            lr=args.lr,
                            lr_weight_decay=args.lrwd,
@@ -424,6 +440,7 @@ if __name__ == '__main__':
                            dir_checkpoint=dir_checkpoint,
                            epochs=args.epochs,
                            infos=infos,
-                           max_batchsize=args.max_batchsize)
+                           max_batchsize=args.max_batchsize,
+                           device=device)
     
     trainer.run(save_cp=save_cp)

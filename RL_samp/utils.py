@@ -50,33 +50,6 @@ class ocmrLoader():
         self.reset_iter()
         print(f'Dimension of the current data file: t_ubd {self.t_ubd}, slice_ubd {self.slice_ubd}, rep_ubd {self.rep_ubd}')
         self.reset_count += 1
-            
-#     def test(self):
-#         '''
-#         load a batch of time series images
-#         '''                        
-#         for ind in range(self.batch_size):
-#             print(f't {self.t}, rep {self.rep}, slice {self.slice}, batch ind {ind}')
-#             endTime = self.t+self.t_backtrack
-#             if endTime <= self.t_ubd-1:
-#                 print(f'source inds: {np.arange(self.t,endTime)}, target inds: {endTime}')
-#             else: # glue earlier frames onto the current last few frames in the time series
-#                 addOn = self.t_backtrack - (self.t_ubd-self.t)
-#                 print(f'source inds: {np.arange(self.t,endTime)}, target inds: {addOn}')
-#             self.t += 1 # time index increases by 1    
-
-#             if self.t == self.t_ubd:
-#                 self.t = 0
-#                 self.slice += 1
-#                 print('\n  ~~ new slice ~~ \n')
-#                 if self.slice == self.slice_ubd:
-#                     print('\n  ~~ new rep ~~ \n')
-#                     self.rep  += 1
-#                     self.slice = 0
-#             if self.rep == self.rep_ubd:
-#                 print('\n  ~~ reset ~~ \n')
-#                 if self.train_mode:
-#                     self.reset_iter()
         
     def load(self):
         '''
@@ -106,13 +79,8 @@ class ocmrLoader():
                 if self.slice == self.slice_ubd:
                     self.rep  += 1
                     self.slice = 0
-            if (self.rep == self.rep_ubd): 
+            if (self.rep == self.rep_ubd) and (self.train_mode): 
                 self.reset()
-                if not self.train_mode: # test_mode, still has useful data but less than batchsize
-                    data_source = data_source[0:ind+1]
-                    data_target = data_target[0:ind+1]
-                    self.rep = self.rep_ubd
-                    break
         return data_source, data_target
 
 def shiftsamp(sparsity,imgHeg):
@@ -191,11 +159,10 @@ def fft_observe(imgs,mask,return_opt='img',roll=False, action=None, abs_opt=Fals
             Since rolling fft info is only for the sigpy solver, we only roll fft info but do not roll masks.
     Dec 29: if action is given, then return the magnitude of the newly sampled lines
     '''
-    imgs_fft = F.fftn(imgs,dim=(2,3),norm='ortho').to(torch.cfloat)
-    breakpoint()
+    imgs_fft  = F.fftn(imgs,dim=(2,3),norm='ortho').to(torch.cfloat)
+    [N,C,H,W] = imgs_fft.shape
     if action is not None:
         reference = torch.max(torch.sum(torch.abs(imgs_fft[:,:,:,0])**2, dim=2))
-        [N,C,H,W] = imgs_fft.shape
         magnitude = torch.sum(torch.abs(imgs_fft[:,:,:,action])**2/reference) / (N*C)
         
     if len(mask.shape) > 1:
@@ -209,12 +176,14 @@ def fft_observe(imgs,mask,return_opt='img',roll=False, action=None, abs_opt=Fals
         imgs_obs = F.ifftn(imgs_fft,dim=(2,3),norm='ortho')
         if abs_opt:
             imgs_obs = torch.abs(imgs_obs)
-        else:
+        else: # separate real and imaginary parts
             assert(C==1)
-            img_output = torch.zeros(imgs_obs.shape[0],2,H,W)
-            img_output[:,0,:,:] = torch.real(imgs_obs[:,0,:,:])
-            img_output[:,1,:,:] = torch.imag(imgs_obs[:,0,:,:])
-            img_obs = img_output
+#             if C>1:
+#                 imgs_obs = torch.reshape(imgs_obs, (-1,1,H,W))
+            imgs_output = torch.zeros(imgs_obs.shape[0],2,H,W)
+            imgs_output[:,0,:,:] = torch.real(imgs_obs[:,0,:,:])
+            imgs_output[:,1,:,:] = torch.imag(imgs_obs[:,0,:,:])
+            imgs_obs = imgs_output 
         if action is None:
             return imgs_obs
         else:
