@@ -239,6 +239,8 @@ class REINFORCE_tester():
                   unet=None,
                   rand_eval_unet=None,
                   lowfreq_eval_unet=None,
+                  prob_eval_unet=None,
+                  probdistr=None,
                   infostr="",
                   mag_weight:float=1.,):
         
@@ -261,11 +263,13 @@ class REINFORCE_tester():
         self.unet = unet
         self.rand_eval_unet    = rand_eval_unet
         self.lowfreq_eval_unet = lowfreq_eval_unet
+        self.prob_eval_unet    = prob_eval_unet
+        self.probdistr = probdistr
         
         self.save_dir = save_dir        
 
-        self.test_hist = {'rmse':[], 'recon_samples':[], 'rmse_rand':[], 'rmse_lowfreq':[],
-                          'ssim':[], 'ssim_rand':[], 'ssim_lowfreq':[],}
+        self.test_hist = {'rmse':[], 'recon_samples':[], 'rmse_rand':[], 'rmse_lowfreq':[],'rmse_prob':[],
+                          'ssim':[], 'ssim_rand':[], 'ssim_lowfreq':[],'ssim_prob':[]}
         self.guide_epochs = 0
         self.mag_weight   = mag_weight
         self.infostr      = infostr + f'_magweg{mag_weight}_rwd{reward_scale}' if infostr is not None else f'_magweg{mag_weight}_rwd{reward_scale}'
@@ -325,6 +329,31 @@ class REINFORCE_tester():
             nrmse_res = NRMSE(recon_lowfreq, target_gt.to(self.device))
             ssim_res  = ssim_uniform(recon_lowfreq,target_gt.to(self.device),reduction = 'mean')
         return nrmse_res, ssim_res
+    
+    def mask_given_prob(self,sampdim,probdistr,fix=8,other=16,roll=False):
+        '''
+        input imgs: [NCHW]
+        '''
+        fix   = int(fix)
+        other = int(other)
+        
+        fixInds  = np.concatenate((np.arange(0,round(fix//2) ),np.arange(sampdim-1,sampdim-1-round(fix/2),-1)))
+        addInds  = np.random.choice(np.arange(sampdim),size=other,replace=False,p=probdistr.numpy())
+        maskInds = np.concatenate((fixInds,addInds))
+        mask     = np.zeros(sampdim)
+        mask[maskInds]= 1
+        if roll:
+            mask = np.roll(mask,shift=sampdim//2,axis=0)
+        return mask
+    
+    def prob_eval(self, target_gt):
+        with torch.no_grad():
+            mask = self.mask_given_prob(sampdim=self.fulldim,probdistr=self.probdistr,fix=self.base,other=self.budget) # curr_state
+            target_obs_prob = fft_observe(target_gt,mask,return_opt='img', abs_opt=False)
+            recon_prob   = unet_solver(target_obs_prob.to(self.device), self.prob_eval_unet)
+            nrmse_res = NRMSE(recon_prob, target_gt.to(self.device))
+            ssim_res  = ssim_uniform(recon_prob,target_gt.to(self.device),reduction = 'mean')
+        return nrmse_res, ssim_res
           
     def run(self):
         with torch.no_grad():
@@ -350,10 +379,12 @@ class REINFORCE_tester():
 
                 rmse_rl_currFile      = []
                 rmse_rand_currFile    = []
-                rmse_lowfreq_currFile = [] 
+                rmse_lowfreq_currFile = []
+                rmse_prob_currFile    = []
                 ssim_rl_currFile      = []
                 ssim_rand_currFile    = []
                 ssim_lowfreq_currFile = []
+                ssim_prob_currFile    = []
                 x, x_gt = recon_pair[0],recon_pair[1]
 
                 while data_target is not None:
@@ -362,11 +393,14 @@ class REINFORCE_tester():
 
                     rand_res = self.rand_eval(data_target)
                     lowfreq_res = self.lowfreq_eval(data_target)
-
+                    prob_res = self.prob_eval(data_target)
+                    
                     rmse_rand_currFile.append( rand_res[0].item() )
                     rmse_lowfreq_currFile.append( lowfreq_res[0].item() )
+                    rmse_prob_currFile.append( prob_res[0].item() )
                     ssim_rand_currFile.append( rand_res[1].item() )
                     ssim_lowfreq_currFile.append( lowfreq_res[1].item() )
+                    ssim_prob_currFile.append( prob_res[1].item() )
 
                     _, data_target = self.dataloader.load()
                     if data_target is not None:
@@ -378,11 +412,13 @@ class REINFORCE_tester():
 
                 self.test_hist['rmse'].append( sum(rmse_rl_currFile)/len(rmse_rl_currFile) )                
                 self.test_hist['rmse_rand'].append( sum(rmse_rand_currFile)/len(rmse_rand_currFile) )
-                self.test_hist['rmse_lowfreq'].append( sum(rmse_lowfreq_currFile)/len(rmse_lowfreq_currFile) )  
+                self.test_hist['rmse_lowfreq'].append( sum(rmse_lowfreq_currFile)/len(rmse_lowfreq_currFile) ) 
+                self.test_hist['rmse_prob'].append( sum(rmse_prob_currFile)/len(rmse_prob_currFile) )
 
                 self.test_hist['ssim'].append( sum(ssim_rl_currFile)/len(ssim_rl_currFile) )                
                 self.test_hist['ssim_rand'].append( sum(ssim_rand_currFile)/len(ssim_rand_currFile) )
                 self.test_hist['ssim_lowfreq'].append( sum(ssim_lowfreq_currFile)/len(ssim_lowfreq_currFile) )  
+                self.test_hist['ssim_prob'].append( sum(ssim_prob_currFile)/len(ssim_prob_currFile) )
 
                 self.dataloader.reset()
 

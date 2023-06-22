@@ -702,6 +702,7 @@ class AC1_ET_trainer():
                 mask[action] = 1
                 
                 ### Save training recon samples
+                save_flag = True if np.random.rand() < 0.1 else False
                 if t == self.horizon-1:
                     rmse_tmp = NRMSE(recon_pair[0],recon_pair[1])
                     self.train_hist['rmse'].append( rmse_tmp )
@@ -713,7 +714,7 @@ class AC1_ET_trainer():
                     print(f'step: {self.steps}, rmse_lowfreq {rmse_lowfreq}')
                     self.train_hist['rmse_lowfreq'].append( rmse_lowfreq )
                     
-                    if np.random.rand() <= 0.1:
+                    if save_flag: # np.random.rand() <= 0.1:
                         recon_pair.append(mask) # save mask as well
                         self.train_hist['recon_samples'].append(recon_pair)
                         
